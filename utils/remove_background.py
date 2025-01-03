@@ -139,7 +139,7 @@ def select_bounding_box_and_points(
     image: NDArray[np.uint8]
 ) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[List[Tuple[int, int]]]]:
     """
-    Open an OpenCV window to allow the user to select a single bounding box (ROI)
+    Open an OpenCV window to allow the user to optionally select a bounding box (ROI)
     and then optionally select multiple points with mouse clicks.
     
     Args:
@@ -153,38 +153,40 @@ def select_bounding_box_and_points(
     # Print instructions in the terminal
     print("""
 ======================================================
-Step 1: Bounding Box Selection
+Step 1: Bounding Box Selection (Optional)
 ------------------------------------------------------
 1) A window titled "Select ROI" will appear.
 2) Left-click and drag to draw a rectangular bounding
    box around the main object.
 3) Press ENTER or SPACE to confirm the bounding box.
-4) Press ESC if you want to cancel and skip this image.
+4) Press ESC to skip bounding box selection and proceed
+   to point selection.
 ======================================================
 """)
 
     clone = image.copy()
     
-    # Step 1: Let user select bounding box
+    # Step 1: Let user select bounding box (optional)
     cv2.imshow("Select ROI", clone)
     bbox = cv2.selectROI("Select ROI", clone, fromCenter=False)
     cv2.destroyWindow("Select ROI")
     
     (x, y, w, h) = bbox
-    if w == 0 or h == 0:
-        print("No bounding box selected. Exiting for this image.")
-        return None, None
+    has_bbox = w != 0 and h != 0
     
     # Print instructions for selecting points
     print("""
 ======================================================
-Step 2: Points Selection
+Step 2: Points Selection (Optional)
 ------------------------------------------------------
 1) A window titled "Select Points (Press ESC when done)"
    will appear.
-2) Left-click anywhere inside the bounding box to add
-   point(s). Each click adds a red dot.
+2) Left-click anywhere to add point(s). Each click adds
+   a red dot.
 3) Press ESC (or 'q') when you're done placing points.
+4) If no points are selected, the model will try to
+   segment based on the bounding box (if provided) or
+   the entire image.
 ======================================================
 """)
 
@@ -197,8 +199,9 @@ Step 2: Points Selection
             cv2.imshow("Select Points (Press ESC when done)", param)
 
     temp_img = clone.copy()
-    # Draw the bounding box on the temporary image
-    cv2.rectangle(temp_img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    # Draw the bounding box on the temporary image if one was selected
+    if has_bbox:
+        cv2.rectangle(temp_img, (x, y), (x + w, y + h), (0, 255, 0), 2)
     cv2.imshow("Select Points (Press ESC when done)", temp_img)
     cv2.setMouseCallback("Select Points (Press ESC when done)", mouse_callback, temp_img)
 
@@ -209,7 +212,7 @@ Step 2: Points Selection
             break
     cv2.destroyWindow("Select Points (Press ESC when done)")
 
-    return bbox, points
+    return (bbox if has_bbox else None), (points if points else None)
 
 
 def load_image_paths(input_path: str) -> List[str]:
@@ -458,8 +461,8 @@ def main() -> None:
         else:
             # Interactive bounding box and points selection
             bbox, points = select_bounding_box_and_points(image_bgr)
-            if bbox is None:
-                print("Skipping this image due to no bounding box.")
+            if bbox is None and points is None:
+                print("Skipping this image due to no bounding box and no points.")
                 continue
 
             binary_mask = segment_object(predictor, image_bgr, bbox=bbox, points=points)
