@@ -137,7 +137,7 @@ def parse_arguments() -> argparse.Namespace:
 
 def select_bounding_box_and_points(
     image: NDArray[np.uint8]
-) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[List[Tuple[int, int]]]]:
+) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[Tuple[List[Tuple[int, int]], List[int]]]]:
     """
     Open an OpenCV window to allow the user to optionally select a bounding box (ROI)
     and then optionally select multiple points with mouse clicks.
@@ -148,7 +148,8 @@ def select_bounding_box_and_points(
     Returns:
         Tuple containing:
             - bounding_box: (x, y, w, h) of the selected ROI or None
-            - points: list of (x, y) points selected by the user or None
+            - points_and_labels: Tuple of (points, labels) where points is list of (x, y) 
+              coordinates and labels is list of 1 (foreground) or 0 (background)
     """
     # Print instructions in the terminal
     print("""
@@ -181,21 +182,28 @@ Step 2: Points Selection (Optional)
 ------------------------------------------------------
 1) A window titled "Select Points (Press ESC when done)"
    will appear.
-2) Left-click anywhere to add point(s). Each click adds
-   a red dot.
-3) Press ESC (or 'q') when you're done placing points.
-4) If no points are selected, the model will try to
+2) Left-click to add foreground points (red dots)
+3) Right-click to add background points (blue dots)
+4) Press ESC (or 'q') when you're done placing points.
+5) If no points are selected, the model will try to
    segment based on the bounding box (if provided) or
    the entire image.
 ======================================================
 """)
 
     points = []
+    point_labels = []
 
     def mouse_callback(event, mx, my, flags, param):
-        if event == cv2.EVENT_LBUTTONDOWN:
-            cv2.circle(param, (mx, my), 3, (0, 0, 255), -1)
+        if event == cv2.EVENT_LBUTTONDOWN:  # Left click = foreground
+            cv2.circle(param, (mx, my), 3, (0, 0, 255), -1)  # Red dot
             points.append((mx, my))
+            point_labels.append(1)
+            cv2.imshow("Select Points (Press ESC when done)", param)
+        elif event == cv2.EVENT_RBUTTONDOWN:  # Right click = background
+            cv2.circle(param, (mx, my), 3, (255, 0, 0), -1)  # Blue dot
+            points.append((mx, my))
+            point_labels.append(0)
             cv2.imshow("Select Points (Press ESC when done)", param)
 
     temp_img = clone.copy()
@@ -212,7 +220,7 @@ Step 2: Points Selection (Optional)
             break
     cv2.destroyWindow("Select Points (Press ESC when done)")
 
-    return (bbox if has_bbox else None), (points if points else None)
+    return (bbox if has_bbox else None), (points if points else None, point_labels if points else None)
 
 
 def load_image_paths(input_path: str) -> List[str]:
@@ -262,10 +270,10 @@ def initialize_sam_model(
 
 
 def segment_object(
-    predictor: Any,  # Using Any because SamPredictor type isn't available
+    predictor: Any,
     image_bgr: NDArray[np.uint8],
     bbox: Optional[Tuple[int, int, int, int]] = None,
-    points: Optional[List[Tuple[int, int]]] = None,
+    points: Optional[Tuple[List[Tuple[int, int]], List[int]]] = None,
 ) -> NDArray[np.uint8]:
     """
     Perform segmentation on an image using SAM, with optional bounding box and points.
@@ -274,7 +282,8 @@ def segment_object(
         predictor: SAM predictor object.
         image_bgr: Input image in BGR.
         bbox: (x, y, w, h) bounding box.
-        points: List of (x, y) point coordinates.
+        points: Tuple of (point_coords, point_labels) where point_coords is list of (x, y)
+               coordinates and point_labels is list of 1 (foreground) or 0 (background).
 
     Returns:
         Binary mask (shape: [H, W]) of the segmented object.
@@ -284,24 +293,24 @@ def segment_object(
 
     input_boxes = None
     input_points = None
-    labels = None
+    input_labels = None
 
     if bbox is not None:
-        # Convert (x, y, w, h) -> [x0, y0, x1, y1]
         x, y, w, h = bbox
         input_box = np.array([x, y, x + w, y + h])
-        input_boxes = input_box[None, :]  # SAM expects shape (B, 4)
-    
-    if points:
-        input_points = np.array(points)
-        # All points are considered positive points (label=1)
-        labels = np.ones(len(points), dtype=np.int32)
+        input_boxes = input_box[None, :]
+
+    if points is not None:
+        point_coords, point_labels = points
+        if point_coords:
+            input_points = np.array(point_coords)
+            input_labels = np.array(point_labels)
 
     masks, scores, _ = predictor.predict(
         point_coords=input_points,
-        point_labels=labels,
+        point_labels=input_labels,
         box=input_boxes,
-        multimask_output=True  # SAM can output multiple masks
+        multimask_output=True
     )
 
     # If multiple masks exist, let user choose the best one interactively
@@ -460,12 +469,12 @@ def main() -> None:
                 continue
         else:
             # Interactive bounding box and points selection
-            bbox, points = select_bounding_box_and_points(image_bgr)
-            if bbox is None and points is None:
+            bbox, points_and_labels = select_bounding_box_and_points(image_bgr)
+            if bbox is None and points_and_labels[0] is None:
                 print("Skipping this image due to no bounding box and no points.")
                 continue
 
-            binary_mask = segment_object(predictor, image_bgr, bbox=bbox, points=points)
+            binary_mask = segment_object(predictor, image_bgr, bbox=bbox, points=points_and_labels)
 
         # Save the RGBA result
         save_segmented_image(image_bgr, binary_mask, out_path)
