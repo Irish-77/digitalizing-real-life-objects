@@ -2,7 +2,7 @@ import os
 import argparse
 from pathlib import Path
 
-def rename_files(directory: str, base_name: str):
+def rename_files(directory: str, base_name: str) -> None:
     # Convert to Path and validate directory
     dir_path = Path(directory)
     if not dir_path.exists() or not dir_path.is_dir():
