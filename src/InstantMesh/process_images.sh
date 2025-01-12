@@ -5,7 +5,7 @@ IMAGE_DIR="/home/ntomasz/Documents/Personal/OBJECTS/repo/data/segmented"
 SCRIPT_DIR="/home/ntomasz/Documents/Personal/OBJECTS/InstantMesh"
 OUT_DIR="/home/ntomasz/Documents/Personal/OBJECTS/repo/out"
 cd $SCRIPT_DIR
-
+source /home/ntomasz/Documents/Personal/OBJECTS/envs/InstantMesh/bin/activate
 # Check if directory exists
 if [ ! -d "$IMAGE_DIR" ]; then
     echo "Error: Directory $IMAGE_DIR not found!"
