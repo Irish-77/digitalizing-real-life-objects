@@ -221,7 +221,7 @@ def main() -> None:
     ensure_directory(args.output_dir)
     
     # Define valid extensions
-    pointcloud_exts = ['.txt', '.xyz', '.pcd']
+    pointcloud_exts = ['.txt', '.xyz', '.pcd', '.ply']
     mesh_exts = ['.obj', '.stl', '.ply']
     valid_exts = pointcloud_exts if args.input_type == "pointcloud" else mesh_exts
     
