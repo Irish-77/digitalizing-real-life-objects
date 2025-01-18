@@ -1,6 +1,8 @@
 import os
 import math
 import string
+import random
+import csv
 from PIL import Image, ImageDraw, ImageFont, ImageSequence
 
 def scale_image_preserve_aspect(image, target_size):
@@ -61,6 +63,20 @@ def create_survey_gifs(
     ]
     save_model_mapping(mapping_path, mappings)
     print(f"Saved model mapping: {mapping_path}")
+
+    # Create CSV file for tracking mappings
+    csv_path = os.path.join(output_gifs_dir, "model_mappings.csv")
+    with open(csv_path, 'w', newline='') as csvfile:
+        csvwriter = csv.writer(csvfile)
+        csvwriter.writerow(['animation_name'] + label_chars[:len(model_names)])
+
+    # Create a position mapping file (A, B, C positions)
+    mapping_path = os.path.join(output_gifs_dir, "position_mapping.txt")
+    with open(mapping_path, 'w') as f:
+        for idx, letter in enumerate(label_chars[:len(model_names)]):
+            row = idx // 3
+            col = idx % 3
+            f.write(f"{letter}: Position Row {row+1}, Column {col+1}\n")
 
     # Load a font if a path is provided; otherwise create a larger default font
     if label_font_path is not None and os.path.isfile(label_font_path):
@@ -149,6 +165,25 @@ def create_survey_gifs(
         if all(g is None for g in reconstruction_gifs):
             print(f"No GIFs found for image {img_name}. Skipping...")
             continue
+
+        # Shuffle the reconstruction_gifs while keeping track of original indices
+        indexed_gifs = list(enumerate(reconstruction_gifs))
+        random.shuffle(indexed_gifs)
+        shuffled_indices, reconstruction_gifs = zip(*indexed_gifs)
+        reconstruction_gifs = list(reconstruction_gifs)
+
+        # Write the mapping for this animation to CSV
+        animation_name = f"{os.path.splitext(img_name)[0]}_survey.gif"
+        csv_row = [animation_name]
+        model_mapping = [''] * len(model_names)
+        for new_pos, original_idx in enumerate(shuffled_indices):
+            if new_pos < len(label_chars):
+                model_mapping[new_pos] = model_names[original_idx]
+        csv_row.extend(model_mapping)
+        
+        with open(csv_path, 'a', newline='') as csvfile:
+            csvwriter = csv.writer(csvfile)
+            csvwriter.writerow(csv_row)
 
         # -- Determine final canvas size --
         # New layout: 3 columns, multiple rows if needed
