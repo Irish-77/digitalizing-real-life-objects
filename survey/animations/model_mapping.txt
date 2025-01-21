@@ -1,0 +1,5 @@
+A: Gen3Diffusion
+B: IM
+C: LGM
+D: TriplaneGaussian
+E: TripoSR
