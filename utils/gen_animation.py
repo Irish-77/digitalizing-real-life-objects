@@ -8,6 +8,29 @@ import imageio
 import os
 from PIL import Image
 
+### start TESTING
+
+def calculate_fov(meshes, desired_fill_ratio=1.5):
+    """Calculate FOV based on mesh dimensions to fill the view."""
+    # Get bounding box dimensions of all meshes combined
+    all_vertices = np.vstack([mesh.vertices for mesh in meshes])
+    bbox_min = np.min(all_vertices, axis=0)
+    bbox_max = np.max(all_vertices, axis=0)
+    dimensions = bbox_max - bbox_min
+
+    # Get the maximum dimension (width or height)
+    max_dimension = max(dimensions[0], dimensions[1])
+
+    # Calculate distance to camera (z-position in camera_pose)
+    camera_distance = 2.0  # From your original camera pose
+
+    # Calculate FOV using trigonometry
+    # tan(FOV/2) = (max_dimension/2) / camera_distance
+    fov = 2 * np.arctan((max_dimension/2 * desired_fill_ratio) / camera_distance)
+
+    return fov
+### end TESTING
+
 def create_rotation_matrix(angle, axis):
     """Create rotation matrix for specific axis and angle."""
     c, s = cos(angle), sin(angle)
@@ -108,8 +131,12 @@ def create_animation(input_file, output_path, model_name, type, n_frames, width,
             mesh_pyrender = pyrender.Mesh.from_trimesh(mesh)
             scene.add(mesh_pyrender)
 
+    # start TESTINg
+    FOV = calculate_fov(transformed_meshes)
+    # end TESTING
+    
     # Create a camera and add it to the scene
-    camera = pyrender.PerspectiveCamera(yfov=FOV*1.2)
+    camera = pyrender.PerspectiveCamera(yfov=FOV)
     camera_pose = np.array([
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
