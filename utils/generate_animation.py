@@ -24,6 +24,8 @@ import argparse
 import glob
 import warnings
 import vtk
+import trimesh
+import pyrender
 
 import sys
 import io
@@ -66,61 +68,6 @@ def euler_matrix_z_y_x(alpha: float, beta: float, gamma: float) -> np.ndarray:
     # Combined rotation = Rz * Ry * Rx
     return Rz @ Ry @ Rx
 
-def convert_pointcloud_to_mesh(input_file: str) -> o3d.geometry.TriangleMesh:
-    """Convert a point cloud file to a triangle mesh using Poisson surface reconstruction.
-
-    Args:
-        input_file (str): Path to the input point cloud file
-
-    Returns:
-        o3d.geometry.TriangleMesh: The generated triangle mesh
-
-    Raises:
-        ValueError: If the point cloud file is empty or cannot be read
-    """
-
-    warnings.filterwarnings('ignore', category=UserWarning, module='vtkOBJReader')
-
-    depth = 10
-
-    pcd = o3d.io.read_point_cloud(input_file)
-
-    # Happens if models have only predicted smaller dataset
-    if pcd.is_empty():
-        raise ValueError(f"Failed to read point cloud or the point cloud is empty: {input_file}")
-
-    # Clean up the point cloud (remove outliers)
-    # -> remove_statistical_outlier typically produces a cleaner set of inliers
-    cl, inliers = pcd.remove_statistical_outlier(nb_neighbors=50, std_ratio=2.5)
-    pcd = pcd.select_by_index(inliers)
-
-    # Estimate normals
-    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(
-        radius=.5, max_nn=100
-    ))
-    # Re-orient normals so they point consistently
-    pcd.orient_normals_consistent_tangent_plane(k=100)
-
-    # Poisson reconstruction
-    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-        pcd, depth=depth,
-        n_threads=1 # Must be one, otherwise random crashes
-    )
-        
-
-    # Crop away very low-density vertices
-    densities = np.asarray(densities)
-    low_density_cutoff = np.quantile(densities, 0.02)  # keep top 98% by density
-    vertices_to_remove = densities < low_density_cutoff
-    mesh.remove_vertices_by_mask(vertices_to_remove)
-
-    # Smooth the mesh
-    mesh = mesh.filter_smooth_simple(number_of_iterations=5)
-    # I tried both but couldn't see a difference in the output
-    # or: mesh = mesh.filter_smooth_laplacian(number_of_iterations=10)
-
-    return mesh
-
 def ensure_directory(path: str) -> None:
     """Create directory if it doesn't exist."""
     Path(path).mkdir(parents=True, exist_ok=True)
@@ -150,6 +97,87 @@ def get_output_path(input_file: str, output_dir: str, suffix: str) -> str:
     base_name = Path(input_file).stem
     return str(Path(output_dir) / f"{base_name}{suffix}")
 
+def convert_trimesh_to_pyvista(trimesh_mesh):
+    """Convert a trimesh mesh to a PyVista mesh, preserving colors and textures."""
+    vertices = trimesh_mesh.vertices
+    faces = trimesh_mesh.faces
+    
+    # PyVista needs faces with count prepended
+    faces_with_count = np.column_stack((np.full(len(faces), 3), faces))
+    faces_with_count = faces_with_count.flatten()
+    
+    mesh = pv.PolyData(vertices, faces_with_count)
+    
+    # Handle vertex colors if they exist
+    if hasattr(trimesh_mesh.visual, 'vertex_colors'):
+        vertex_colors = trimesh_mesh.visual.vertex_colors
+        if vertex_colors is not None:
+            mesh.point_data['RGB'] = vertex_colors[:, :3]
+    
+    # Handle face colors if they exist
+    if hasattr(trimesh_mesh.visual, 'face_colors'):
+        face_colors = trimesh_mesh.visual.face_colors
+        if face_colors is not None:
+            mesh.cell_data['RGB'] = face_colors[:, :3]
+            
+    return mesh
+
+def convert_pyrender_to_pyvista(pyrender_mesh):
+    """Convert a pyrender mesh to a PyVista mesh."""
+    vertices = pyrender_mesh.primitives[0].positions
+    indices = pyrender_mesh.primitives[0].indices
+    
+    # PyVista needs faces with count prepended
+    faces_with_count = np.column_stack((np.full(len(indices), 3), indices))
+    faces_with_count = faces_with_count.flatten()
+    
+    mesh = pv.PolyData(vertices, faces_with_count)
+    
+    # Handle colors if available
+    if pyrender_mesh.primitives[0].color_0 is not None:
+        mesh.point_data['RGB'] = pyrender_mesh.primitives[0].color_0[:, :3]
+    
+    return mesh
+
+def load_glb_file(file_path):
+    """Load a GLB file and convert it to a PyVista mesh."""
+    # Load the GLB file with trimesh
+    trimesh_scene = trimesh.load(file_path)
+    
+    # Create a pyrender scene
+    scene = pyrender.Scene()
+    camera_pose = np.array([
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 2.0],
+    [0.0, 0.0, 0.0, 1.0]
+    ])
+    light = pyrender.DirectionalLight(color=np.ones(3), intensity=2.0)
+    scene.add(light, pose=camera_pose)
+    
+    # Convert all meshes from the trimesh scene to pyrender
+    all_vertices = []
+    all_faces = []
+    vertex_offset = 0
+    
+    for mesh in trimesh_scene.geometry.values():
+        if isinstance(mesh, trimesh.Trimesh):
+            mesh_pyrender = pyrender.Mesh.from_trimesh(mesh)
+            all_vertices.append(mesh.vertices)
+            all_faces.append(mesh.faces + vertex_offset)
+            vertex_offset += len(mesh.vertices)
+    
+    # Combine all meshes into one
+    vertices = np.vstack(all_vertices)
+    faces = np.vstack(all_faces)
+    
+    # Create PyVista mesh
+    faces_with_count = np.column_stack((np.full(len(faces), 3), faces))
+    faces_with_count = faces_with_count.flatten()
+    
+    return pv.PolyData(vertices, faces_with_count)
+
+
 def main() -> None:
     """Main function to process command line arguments and generate the animation.
 
@@ -171,9 +199,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--input_type",
-        choices=["mesh", "pointcloud"],
+        choices=["mesh", "glb"],
         required=True,
-        help="Type of input: 'mesh' or 'pointcloud'."
+        help="Type of input: 'mesh', or 'glb'. 'pointcloud' is deprecated."
     )
     parser.add_argument(
         "--input_path",
@@ -222,7 +250,7 @@ def main() -> None:
     
     # Define valid extensions
     pointcloud_exts = ['.txt', '.xyz', '.pcd', '.ply']
-    mesh_exts = ['.obj', '.stl', '.ply']
+    mesh_exts = ['.obj', '.stl', '.ply', '.glb']
     valid_exts = pointcloud_exts if args.input_type == "pointcloud" else mesh_exts
     
     # Get all input files
@@ -234,28 +262,46 @@ def main() -> None:
         print(f"\nProcessing {input_file}...")
         
         # Generate output paths
-        mesh_path = get_output_path(input_file, os.path.join(args.output_dir, "meshes"), "_mesh.obj")
         gif_path = get_output_path(input_file, args.output_dir, "_animation.gif")
 
         # Process the file
-        if args.input_type == "pointcloud":
-            try:
-                mesh = convert_pointcloud_to_mesh(input_file)
-                o3d.io.write_triangle_mesh(mesh_path, mesh)
-                print(f"Mesh saved to {mesh_path}")
-            except ValueError as e:
-                print(f"Error processing {input_file}: {e}")
-                continue
-        else:
+        if args.input_type == "mesh":
             mesh_path = input_file
+            scene_or_mesh = trimesh.load(mesh_path)
+            
+            if isinstance(scene_or_mesh, trimesh.Scene):
+                print("Loaded file is a scene. Extracting geometry...")
+                mesh = trimesh.util.concatenate([geometry for geometry in scene_or_mesh.geometry.values()])
+            else:
+                print("Loaded file is a single mesh.")
+                mesh = scene_or_mesh
+                
+            # Convert trimesh to PyVista mesh
+            pv_mesh = convert_trimesh_to_pyvista(mesh)
+            
+        elif args.input_type == "glb":
+            print("Loading GLB file...")
+            pv_mesh = load_glb_file(input_file)
 
-        # # Create the animation
-        # 2) Read the mesh file
-        mesh = pv.read(mesh_path)
+            # Set up the plotter with the correct color mapping
+            plotter = pv.Plotter(off_screen=True, window_size=(args.resolution))
+            plotter.add_mesh(
+                pv_mesh,
+                rgb=True,
+                show_edges=False,
+                interpolate_before_map=True
+            )
 
-        # 3) Create a Plotter in off-screen mode
+
+
+        # Continue with existing animation code...
         plotter = pv.Plotter(off_screen=True, window_size=(args.resolution))
-        plotter.add_mesh(mesh, show_edges=False)
+        if 'RGB' in pv_mesh.point_data:
+            plotter.add_mesh(pv_mesh, scalars='RGB', rgb=True, show_edges=False)
+        elif 'RGB' in pv_mesh.cell_data:
+            plotter.add_mesh(pv_mesh, scalars='RGB', rgb=True, show_edges=False)
+        else:
+            plotter.add_mesh(pv_mesh, show_edges=False)
 
         # Fit the camera to the object once
         plotter.show(auto_close=False)
@@ -263,10 +309,10 @@ def main() -> None:
         plotter.camera.SetViewAngle(args.vertical_fov)
 
         # 4) Determine bounding box and camera radius
-        x_min, x_max, y_min, y_max, z_min, z_max = mesh.bounds
+        x_min, x_max, y_min, y_max, z_min, z_max = pv_mesh.bounds
         max_extent = max(x_max - x_min, y_max - y_min, z_max - z_min)
         radius = max_extent * 1.5
-        center = mesh.center  # The focal point
+        center = pv_mesh.center  # The focal point
 
         # 5) Open GIF for writing frames
         plotter.open_gif(gif_path)

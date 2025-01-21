@@ -309,7 +309,7 @@ if __name__ == "__main__":
     Adjust the paths below to match your folder structure.
     """
     input_images_dir = "data/segmented"
-    models_parent_dir = "final/"   # Each subfolder is a model
+    models_parent_dir = "final_gifs/"   # Each subfolder is a model
     output_gifs_dir   = "survey/animations"
 
     # Optional: specify a path to a TTF font if you have a specific font you want to use
@@ -322,5 +322,5 @@ if __name__ == "__main__":
         output_gifs_dir=output_gifs_dir,
         label_font_path=label_font_path,  # or None
         label_font_size=48,    # More reasonable large font size
-        frame_duration=100
+        frame_duration=60
     )
